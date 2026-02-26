@@ -5,7 +5,7 @@
  */
 
 import type React from 'react';
-import { useState, useMemo, useCallback } from 'react';
+import { useState, useMemo, useCallback, useEffect } from 'react';
 import { Box, Text, useStdin } from 'ink';
 import { spawnSync } from 'node:child_process';
 import { dirname } from 'node:path';
@@ -21,6 +21,7 @@ import {
   isGuiEditor,
   coreEvents,
   CoreEvent,
+  DriveManager,
 } from '@google/gemini-cli-core';
 
 export interface MdsBrowserProps {
@@ -28,17 +29,26 @@ export interface MdsBrowserProps {
   onClose: () => void;
 }
 
+interface FileEntry {
+  path: string;
+  type: string;
+  id?: string; // used for drive files
+}
+
 export const MdsBrowser: React.FC<MdsBrowserProps> = ({ config, onClose }) => {
   const { merged: settings } = useSettings();
   const { rows: terminalHeight } = useTerminalSize();
   const { setRawMode } = useStdin();
-  const [activeIndex, setActiveIndex] = useState(0);
 
-  const files = useMemo(() => {
+  const [activeIndex, setActiveIndex] = useState(0);
+  const [viewMode, setViewMode] = useState<'local' | 'drive'>('local');
+  const [driveFiles, setDriveFiles] = useState<FileEntry[]>([]);
+  const [isDriveLoading, setIsDriveLoading] = useState(false);
+
+  const localFiles = useMemo<FileEntry[]>(() => {
     const memoryFiles = config.getGeminiMdFilePaths() || [];
     const agentPaths = new Set<string>();
 
-    // Attempt to collect agent definitions
     const definitions = config.getAgentRegistry()?.getAllDefinitions() || [];
     for (const definition of definitions) {
       if (definition.metadata?.filePath) {
@@ -65,11 +75,34 @@ export const MdsBrowser: React.FC<MdsBrowserProps> = ({ config, onClose }) => {
         return { path: p, type };
       })
       .sort((a, b) => {
-        // Sort Agents first, then Memory
         if (a.type !== b.type) return a.type.localeCompare(b.type);
         return a.path.localeCompare(b.path);
       });
   }, [config]);
+
+  useEffect(() => {
+    if (viewMode === 'drive' && driveFiles.length === 0 && !isDriveLoading) {
+      setIsDriveLoading(true);
+      const manager = new DriveManager(config);
+      manager
+        .listFiles()
+        .then((f: Array<{ id: string; name: string }>) => {
+          setDriveFiles(
+            f.map((item) => ({ path: item.name, type: 'Drive', id: item.id })),
+          );
+        })
+        .catch((e: Error) =>
+          coreEvents.emitFeedback(
+            'error',
+            `[MdsBrowser] Failed to list Drive files: ${e.message}`,
+          ),
+        )
+        .finally(() => setIsDriveLoading(false));
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [viewMode, config]);
+
+  const files = viewMode === 'local' ? localFiles : driveFiles;
 
   const openFileInEditor = useCallback(
     async (filePath: string) => {
@@ -110,6 +143,7 @@ export const MdsBrowser: React.FC<MdsBrowserProps> = ({ config, onClose }) => {
           err,
         );
       } finally {
+        setRawMode?.(true);
         coreEvents.emit(CoreEvent.ExternalEditorClosed);
       }
     },
@@ -142,14 +176,66 @@ export const MdsBrowser: React.FC<MdsBrowserProps> = ({ config, onClose }) => {
 
   useKeypress(
     (key) => {
-      if (
-        key.name === 'escape' ||
-        key.name === 'return' ||
-        key.name === 'enter'
-      ) {
+      if (key.name === 'escape') {
         onClose();
         return true;
       }
+
+      if (key.name === 'return' || key.name === 'enter') {
+        const activeFile = files[activeIndex];
+        if (viewMode === 'drive' && activeFile?.id) {
+          // Download and close
+          coreEvents.emitFeedback('info', `Downloading ${activeFile.path}...`);
+          const manager = new DriveManager(config);
+          manager
+            .downloadFile(activeFile.id, activeFile.path)
+            .then((p: string) =>
+              coreEvents.emitFeedback('info', `File downloaded to: ${p}`),
+            )
+            .catch((e: Error) =>
+              coreEvents.emitFeedback('error', `Download failed: ${e.message}`),
+            )
+            .finally(() => onClose());
+          return true;
+        }
+        onClose();
+        return true;
+      }
+
+      if (keyMatchers[Command.SAVE_TO_DRIVE](key)) {
+        if (viewMode === 'local') {
+          const activeFile = files[activeIndex];
+          if (activeFile) {
+            const manager = new DriveManager(config);
+            coreEvents.emitFeedback(
+              'info',
+              `Saving ${activeFile.path} to Drive...`,
+            );
+            manager
+              .uploadFile(activeFile.path)
+              .then(() =>
+                coreEvents.emitFeedback(
+                  'info',
+                  `Successfully uploaded ${activeFile.path} to Drive.`,
+                ),
+              )
+              .catch((e) =>
+                coreEvents.emitFeedback(
+                  'error',
+                  `Upload failed: ${e instanceof Error ? e.message : String(e)}`,
+                ),
+              );
+          }
+        }
+        return true;
+      }
+
+      if (keyMatchers[Command.IMPORT_FROM_DRIVE](key)) {
+        setViewMode((prev) => (prev === 'local' ? 'drive' : 'local'));
+        setActiveIndex(0);
+        return true;
+      }
+
       if (
         keyMatchers[Command.MOVE_DOWN](key) ||
         keyMatchers[Command.HISTORY_DOWN](key)
@@ -167,17 +253,21 @@ export const MdsBrowser: React.FC<MdsBrowserProps> = ({ config, onClose }) => {
         return true;
       }
       if (keyMatchers[Command.OPEN_EXTERNAL_EDITOR](key)) {
-        const activeFile = files[activeIndex];
-        if (activeFile) {
-          // eslint-disable-next-line @typescript-eslint/no-floating-promises
-          openFileInEditor(activeFile.path);
+        if (viewMode === 'local') {
+          const activeFile = files[activeIndex];
+          if (activeFile) {
+            // eslint-disable-next-line @typescript-eslint/no-floating-promises
+            openFileInEditor(activeFile.path);
+          }
         }
         return true;
       }
       if (keyMatchers[Command.OPEN_FILE_LOCATION](key)) {
-        const activeFile = files[activeIndex];
-        if (activeFile) {
-          openFolder(activeFile.path);
+        if (viewMode === 'local') {
+          const activeFile = files[activeIndex];
+          if (activeFile) {
+            openFolder(activeFile.path);
+          }
         }
         return true;
       }
@@ -197,14 +287,28 @@ export const MdsBrowser: React.FC<MdsBrowserProps> = ({ config, onClose }) => {
   const endIdx = startIdx + availableHeight;
   const visibleFiles = files.slice(startIdx, endIdx);
 
+  if (viewMode === 'drive' && isDriveLoading) {
+    return (
+      <Box flexDirection="column" paddingX={1} marginY={1}>
+        <Text color={Colors.AccentPurple}>Drive Files</Text>
+        <Text color={Colors.Gray}>Loading files from Google Drive...</Text>
+      </Box>
+    );
+  }
+
   if (files.length === 0) {
     return (
       <Box flexDirection="column" paddingX={1} marginY={1}>
-        <Text color={Colors.AccentPurple}>Markdown Files</Text>
-        <Text color={Colors.Gray}>
-          No .GEMINI or .AGENTS files found in use.
+        <Text color={Colors.AccentPurple}>
+          {viewMode === 'local'
+            ? 'Local Markdown Files'
+            : 'Drive Markdown Files'}
         </Text>
-        <Text color={Colors.Gray}>Press Esc to close</Text>
+        <Text color={Colors.Gray}>No files found.</Text>
+        <Text color={Colors.Gray}>
+          Press Esc to close{' '}
+          {viewMode === 'local' ? '│ Alt+i: List Drive' : '│ Alt+i: List Local'}
+        </Text>
       </Box>
     );
   }
@@ -213,7 +317,8 @@ export const MdsBrowser: React.FC<MdsBrowserProps> = ({ config, onClose }) => {
     <Box flexDirection="column" paddingX={1} marginY={1}>
       <Box flexDirection="row" justifyContent="space-between">
         <Text color={Colors.AccentPurple}>
-          Markdown Files ({files.length} total)
+          {viewMode === 'local' ? 'Local' : 'Drive'} Markdown Files (
+          {files.length} total)
         </Text>
       </Box>
       <Box flexDirection="column" marginY={1}>
@@ -248,9 +353,20 @@ export const MdsBrowser: React.FC<MdsBrowserProps> = ({ config, onClose }) => {
         })}
       </Box>
       <Box flexDirection="column">
+        {viewMode === 'local' ? (
+          <Text color={Colors.Gray}>
+            ↑/↓: Navigate │ Enter/Esc: Close │ Ctrl+x: Open File │ Alt+o: Open
+            Folder
+          </Text>
+        ) : (
+          <Text color={Colors.Gray}>
+            ↑/↓: Navigate │ Enter/Esc: Close │ Enter: Download File
+          </Text>
+        )}
         <Text color={Colors.Gray}>
-          ↑/↓: Navigate │ Enter/Esc: Close │ Ctrl+x: Open File │ Alt+o: Open
-          Folder
+          {viewMode === 'local'
+            ? 'Alt+u: Upload to Drive │ Alt+i: List Drive'
+            : 'Alt+i: List Local'}
         </Text>
       </Box>
     </Box>

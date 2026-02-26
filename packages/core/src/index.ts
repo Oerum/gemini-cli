@@ -74,6 +74,7 @@ export * from './utils/gitUtils.js';
 export * from './utils/editor.js';
 export * from './utils/quotaErrorDetection.js';
 export * from './utils/userAccountManager.js';
+export * from './utils/driveManager.js';
 export * from './utils/authConsent.js';
 export * from './utils/googleQuotaErrors.js';
 export * from './utils/fileUtils.js';

@@ -71,6 +71,8 @@ export enum Command {
   NEWLINE = 'input.newline',
   OPEN_EXTERNAL_EDITOR = 'input.openExternalEditor',
   OPEN_FILE_LOCATION = 'input.openFileLocation',
+  SAVE_TO_DRIVE = 'input.saveToDrive',
+  IMPORT_FROM_DRIVE = 'input.importFromDrive',
   PASTE_CLIPBOARD = 'input.paste',
 
   BACKGROUND_SHELL_ESCAPE = 'backgroundShellEscape',
@@ -269,6 +271,8 @@ export const defaultKeyBindings: KeyBindingConfig = {
   ],
   [Command.OPEN_EXTERNAL_EDITOR]: [{ key: 'x', ctrl: true }],
   [Command.OPEN_FILE_LOCATION]: [{ key: 'o', alt: true }],
+  [Command.SAVE_TO_DRIVE]: [{ key: 'u', alt: true }],
+  [Command.IMPORT_FROM_DRIVE]: [{ key: 'i', alt: true }],
   [Command.PASTE_CLIPBOARD]: [
     { key: 'v', ctrl: true },
     { key: 'v', cmd: true },
@@ -395,6 +399,8 @@ export const commandCategories: readonly CommandCategory[] = [
       Command.NEWLINE,
       Command.OPEN_EXTERNAL_EDITOR,
       Command.OPEN_FILE_LOCATION,
+      Command.SAVE_TO_DRIVE,
+      Command.IMPORT_FROM_DRIVE,
       Command.PASTE_CLIPBOARD,
     ],
   },
@@ -500,6 +506,8 @@ export const commandDescriptions: Readonly<Record<Command, string>> = {
   [Command.OPEN_EXTERNAL_EDITOR]:
     'Open the current prompt in an external editor.',
   [Command.OPEN_FILE_LOCATION]: 'Open the directory containing the file.',
+  [Command.SAVE_TO_DRIVE]: 'Save the selected file to Google Drive.',
+  [Command.IMPORT_FROM_DRIVE]: 'Import a file from Google Drive.',
   [Command.PASTE_CLIPBOARD]: 'Paste from the clipboard.',
 
   // App Controls
